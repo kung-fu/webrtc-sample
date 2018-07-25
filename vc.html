@@ -2,9 +2,10 @@
 <html>
 <head>
  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
- <title>multi party</title>
+ <title>multi firebase</title>
  <script src="https://www.gstatic.com/firebasejs/3.1.0/firebase-app.js"></script>
  <script src="https://www.gstatic.com/firebasejs/3.1.0/firebase-database.js"></script>
+
  <script>
    function _assert(desc, v) {
      if (v) {
@@ -18,12 +19,15 @@
   </script>
 </head>
 <body>
-  socket.io signaling for multi-party (trickle ICE)<br />
+  firebase signaling for multi-party (trickle ICE)<br />
   <button type="button" onclick="startVideo();">Start Video</button>
   <button type="button" onclick="stopVideo();">Stop Video</button>
   &nbsp;
   <button type="button" onclick="connect();">Connect</button>
   <button type="button" onclick="hangUp();">Hang Up</button> 
+  &nbsp;
+  <a id="room_link" href="" target="_blank">Open another window (link to this room)</a>
+  <a id="mail_link" href="" target="_blank">Mail link of this room</a>
   <div>
     <video id="local_video" autoplay style="width: 160px; height: 120px; border: 1px solid black;"></video>
   </div>
@@ -50,48 +54,50 @@
   RTCPeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection || window.mozRTCPeerConnection;
   RTCSessionDescription = window.RTCSessionDescription || window.webkitRTCSessionDescription || window.mozRTCSessionDescription;
 
-  // ------ use firebase.io -----
+  
+  // ----- use firebase.io ----
   const dataDebugFlag = false;
   let room = getRoomName();
   // Initialize Firebase
-  let confg = {
+  let config = {
     apiKey: "AIzaSyD5KtMeF0IpCM8LPaR4P-wwRnwD4DwW4Ow",
-    databaseURL: "https://webrtc-signaling-13315.firebaseapp.com/"
+    databaseURL: "https://webrtc-signaling-13315.firebaseapp.com/",
   };
-  let databaseRoot = 'vc/multi/';
+  let databaseRoot = 'message/multi/';
   firebase.initializeApp(config);
-  let database = firebase.database;
+  let database = firebase.database();
   let roomBroadcastRef;
   let clientRef;
   let clientId;
 
-  joinRoom();
-  setRoomLink();
+  joinRoom(room);
+  setRoomLink(room);
 
-  function joinRoom() {
+  function joinRoom(room) {
     console.log('join room name = ' + room);
 
-    // Firebaseが採番するオブジェクトのIDをkeyに使う
-    let key = database.ref(databaseRoot + room + '/_join_').push([{ joined: 'unknown' }]).key;
+    let key = database.ref(databaseRoot + room + '/_join_').push({ joined : 'unknown'}).key
     clientId = 'member_' + key;
     console.log('joined to room=' + room + ' as clientId=' + clientId);
-    database.ref(databaseRoot + room + '/_join_' + key).update([{ joined: clientId }]);
-
+    database.ref(databaseRoot + room + '/_join_/' + key).update({ joined : clientId});
+    
+    
     // remove join object
     if (! dataDebugFlag) {
-      let joinRef = atabase.ref(databaseRoot + room + '/_join_/' + key);
-      joinRef.remove();
+      let jooinRef =  database.ref(databaseRoot + room + '/_join_/' + key);
+      jooinRef.remove();
     }
-
+      
     roomBroadcastRef = database.ref(databaseRoot + room + '/_broadcast_');
     roomBroadcastRef.on('child_added', function(data) {
+      console.log('roomBroadcastRef.on(data) data.key=' + data.key + ', data.val():', data.val());
       let message = data.val();
       let fromId = message.from;
-      if (fromId == clientId) {
-        // 自分からのメッセージは無視する
+      if (fromId === clientId) {
+        // ignore self message
         return;
       }
-
+      
       if (message.type === 'call me') {
         if (! isReadyToConnect()) {
           console.log('Not ready to connect, so ignore');
@@ -100,6 +106,7 @@
         else if (! canConnectMore()) {
           console.warn('TOO MANY connections, so ignore');
         }
+
         if (isConnectedWith(fromId)) {
           // already connnected, so skip
           console.log('already connected, so ignore');
@@ -116,51 +123,52 @@
       }
     });
 
-    clinentRef = database.ref(databaseRoot + room + '/_direct_/' + clientId);
-    clientRef.on('child_add', function(data) {
+    clientRef = database.ref(databaseRoot + room + '/_direct_/' + clientId);
+    clientRef.on('child_added', function(data) {
       console.log('clientRef.on(data)  data.key=' + data.key + ', data.val():', data.val());
       let message = data.val();
-      let fromId = key.from;
+      let fromId = message.from;
 
-      if (message.type == 'offer') {
-        // --- got offer ---
+      if (message.type === 'offer') {
+        // -- got offer ---
         console.log('Received offer ... fromId=' + fromId);
         let offer = new RTCSessionDescription(message);
-        setOffer(fromId, offer)
+        setOffer(fromId, offer);
       }
-      else if (message.type == 'answer') {
+      else if (message.type === 'answer') {
         // --- got answer ---
         console.log('Received answer ... fromId=' + fromId);
-        let answer = RTCSessionDescription(message);
-        setAnswer(fromId, message);
+        let answer = new RTCSessionDescription(message);
+        setAnswer(fromId, answer);
       }
-      else if (message.type == 'candidate') {
+      else if (message.type === 'candidate') {
         // --- got ICE candidate ---
         console.log('Received ICE candidate ... fromId=' + fromId);
-        let candidate = new RTCIceCandidate(JSON.parse(message.ice));
+        let candidate = new RTCIceCandidate(JSON.parse(message.ice)); // <---- JSON
         console.log(candidate);
-        addIceCandidate(candidate);
+        addIceCandidate(fromId, candidate);
       }
-
+      
       if (! dataDebugFlag) {
         // remove direct message
-        let messageRef = database.ref(databaseRoot + room + '/_direct_/' + clientId + '/' + data.key);
+        let messageRef =  database.ref(databaseRoot + room + '/_direct_/' + clientId + '/' + data.key);
         messageRef.remove();
       }
     });
   }
-
+  
   function setRoomLink(room) {
     let url = document.location.href;
-    let anchorLink = document.getElementById("room_link");
+    let anchorLink = document.getElementById('room_link');
     anchorLink.href = url;
     let anchorMail = document.getElementById('mail_link');
     let mailtoUrl = 'mailto:?subject=invitation-of-multi-party-videochat&body=' + url;
     anchorMail.href = mailtoUrl;
   }
   // ----- use firebase.io ---- //
+  
 
-
+  // --- broadcast message to all members in room
   function emitRoom(msg) {
     msg.from = clientId;
     roomBroadcastRef.push(msg);
@@ -173,9 +181,9 @@
   }
 
   function clearMessage() {
-    clientef.set({});
+    clientRef.set({});
   }
-
+  
   // -- room名を取得 --
   function getRoomName() { // たとえば、 URLに  ?roomname  とする
     let url = document.location.href;
@@ -186,9 +194,9 @@
         return room;
       }
     }
-
+    
     // generate rondom room, and replace URL
-    let room = 'room_' + getUniqueStr();
+    let room = 'room_' + getUniqueStr(); 
     window.history.pushState(null, null, 'vc.html?' + room);
     return room;
   }
@@ -200,6 +208,7 @@
     if (myStrong) strong = myStrong;
     return new Date().getTime().toString(16)  + Math.floor(strong*Math.random()).toString(16);
   }
+
 
   // ---- for multi party -----
   function isReadyToConnect() {
@@ -328,7 +337,7 @@
   // ---------------------- media handling ----------------------- 
   // start local video
   function startVideo() {
-    getDeviceStream({video: true, audio: true}) // audio: false <-- ontrack once, audio:true --> ontrack twice!!
+    getDeviceStream({video: true, audio: true})
     .then(function (stream) { // success
       localStream = stream;
       playVideo(localVideo, stream);
@@ -406,13 +415,13 @@
 
   function sendIceCandidate(id, candidate) {
     console.log('---sending ICE candidate ---');
-    let obj = { type: 'candidate', ice: candidate };
+    let obj = { type: 'candidate', ice: JSON.stringify(candidate) }; // <--- JSON
     emitTo(id, obj);
   }
 
   // ---------------------- connection handling -----------------------
   function prepareNewConnection(id) {
-    let pc_config = {"iceServers":[]};
+    let pc_config = {"iceServers":[{"urls": "stun:stun.l.google.com:19302"}]}; // for STUN server
     let peer = new RTCPeerConnection(pc_config);
 
     // --- on get remote stream ---
@@ -424,7 +433,6 @@
           console.log('stream already attached, so ignore');
         }
         else {
-          //playVideo(remoteVideo, stream);
           attachVideo(id, stream);
         }
       };
@@ -433,7 +441,6 @@
       peer.onaddstream = function(event) {
         let stream = event.stream;
         console.log('-- peer.onaddstream() stream.id=' + stream.id);
-        //playVideo(remoteVideo, stream);
         attachVideo(id, stream);
       };
     }
@@ -610,6 +617,7 @@
   // close PeerConnection
   function hangUp() {
     emitRoom({ type: 'bye' });  
+    clearMessage(); // clear firebase
     stopAllConnection();
   }
 
