@@ -36,6 +36,7 @@
 
   // ---- for multi party -----
   let peerConnections = [];
+  let remoteStreams = [];
   let remoteVideos = [];
   const MAX_CONNECTION_COUNT = 3;
 
@@ -49,92 +50,130 @@
   RTCPeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection || window.mozRTCPeerConnection;
   RTCSessionDescription = window.RTCSessionDescription || window.webkitRTCSessionDescription || window.mozRTCSessionDescription;
 
-  // ----- use socket.io ---
-  let port = 3002;
-  let socket = io.connect('http://localhost:' + port + '/');
+  // ------ use firebase.io -----
+  const dataDebugFlag = false;
   let room = getRoomName();
-  socket.on('connect', function(evt) {
-    console.log('socket.io connected. enter room=' + room );
-    socket.emit('enter', room);
-  });
-  socket.on('message', function(message) {
-    console.log('message:', message);
-    let fromId = message.from;
-
-    if (message.type === 'offer') {
-      // -- got offer ---
-      console.log('Received offer ...');
-      let offer = new RTCSessionDescription(message);
-      setOffer(fromId, offer);
-    }
-    else if (message.type === 'answer') {
-      // --- got answer ---
-      console.log('Received answer ...');
-      let answer = new RTCSessionDescription(message);
-      setAnswer(fromId, answer);
-    }
-    else if (message.type === 'candidate') {
-      // --- got ICE candidate ---
-      console.log('Received ICE candidate ...');
-      let candidate = new RTCIceCandidate(message.ice);
-      console.log(candidate);
-      addIceCandidate(fromId, candidate);
-    }
-    else if (message.type === 'call me') {
-      if (! isReadyToConnect()) {
-        console.log('Not ready to connect, so ignore');
-        return;
-      }
-      else if (! canConnectMore()) {
-        console.warn('TOO MANY connections, so ignore');
-      }
-
-      if (isConnectedWith(fromId)) {
-        // already connnected, so skip
-        console.log('already connected, so ignore');
-      }
-      else {
-        // connect new party
-        makeOffer(fromId);
-      }
-    }
-    else if (message.type === 'bye') {
-      if (isConnectedWith(fromId)) {
-        stopConnection(fromId);
-      }
-    }
-  });
-  socket.on('user disconnected', function(evt) {
-    console.log('====user disconnected==== evt:', evt);
-    let id = evt.id;
-    if (isConnectedWith(id)) {
-      stopConnection(id);
-    }
-  });
-
-  // --- Firebase ---
+  // Initialize Firebase
   let confg = {
     apiKey: "AIzaSyD5KtMeF0IpCM8LPaR4P-wwRnwD4DwW4Ow",
     databaseURL: "https://webrtc-signaling-13315.firebaseapp.com/"
   };
+  let databaseRoot = 'vc/multi/';
   firebase.initializeApp(config);
   let database = firebase.database;
-  let databaseRoot = 'myapp/multi/';
+  let roomBroadcastRef;
+  let clientRef;
+  let clientId;
 
-  // Firebaseが採番するオブジェクトのIDをkeyに使う
-  let key = database.ref(databaseRoot + room + '/_join_').push([{ joined: 'unknown' }]).key;
-  clientId = 'member_' + key;
-  database.ref(databaseRoot + room + '/_join_' + key).update([{ joined: clientId }]);
+  joinRoom();
+  setRoomLink();
+
+  function joinRoom() {
+    console.log('join room name = ' + room);
+
+    // Firebaseが採番するオブジェクトのIDをkeyに使う
+    let key = database.ref(databaseRoot + room + '/_join_').push([{ joined: 'unknown' }]).key;
+    clientId = 'member_' + key;
+    console.log('joined to room=' + room + ' as clientId=' + clientId);
+    database.ref(databaseRoot + room + '/_join_' + key).update([{ joined: clientId }]);
+
+    // remove join object
+    if (! dataDebugFlag) {
+      let joinRef = atabase.ref(databaseRoot + room + '/_join_/' + key);
+      joinRef.remove();
+    }
+
+    roomBroadcastRef = database.ref(databaseRoot + room + '/_broadcast_');
+    roomBroadcastRef.on('child_added', function(data) {
+      let message = data.val();
+      let fromId = message.from;
+      if (fromId == clientId) {
+        // 自分からのメッセージは無視する
+        return;
+      }
+
+      if (message.type === 'call me') {
+        if (! isReadyToConnect()) {
+          console.log('Not ready to connect, so ignore');
+          return;
+        }
+        else if (! canConnectMore()) {
+          console.warn('TOO MANY connections, so ignore');
+        }
+        if (isConnectedWith(fromId)) {
+          // already connnected, so skip
+          console.log('already connected, so ignore');
+        }
+        else {
+          // connect new party
+          makeOffer(fromId);
+        }
+      }
+      else if (message.type === 'bye') {
+        if (isConnectedWith(fromId)) {
+          stopConnection(fromId);
+        }
+      }
+    });
+
+    clinentRef = database.ref(databaseRoot + room + '/_direct_/' + clientId);
+    clientRef.on('child_add', function(data) {
+      console.log('clientRef.on(data)  data.key=' + data.key + ', data.val():', data.val());
+      let message = data.val();
+      let fromId = key.from;
+
+      if (message.type == 'offer') {
+        // --- got offer ---
+        console.log('Received offer ... fromId=' + fromId);
+        let offer = new RTCSessionDescription(message);
+        setOffer(fromId, offer)
+      }
+      else if (message.type == 'answer') {
+        // --- got answer ---
+        console.log('Received answer ... fromId=' + fromId);
+        let answer = RTCSessionDescription(message);
+        setAnswer(fromId, message);
+      }
+      else if (message.type == 'candidate') {
+        // --- got ICE candidate ---
+        console.log('Received ICE candidate ... fromId=' + fromId);
+        let candidate = new RTCIceCandidate(JSON.parse(message.ice));
+        console.log(candidate);
+        addIceCandidate(candidate);
+      }
+
+      if (! dataDebugFlag) {
+        // remove direct message
+        let messageRef = database.ref(databaseRoot + room + '/_direct_/' + clientId + '/' + data.key);
+        messageRef.remove();
+      }
+    });
+  }
+
+  function setRoomLink(room) {
+    let url = document.location.href;
+    let anchorLink = document.getElementById("room_link");
+    anchorLink.href = url;
+    let anchorMail = document.getElementById('mail_link');
+    let mailtoUrl = 'mailto:?subject=invitation-of-multi-party-videochat&body=' + url;
+    anchorMail.href = mailtoUrl;
+  }
+  // ----- use firebase.io ---- //
 
 
-  // --- broadcast message to all members in room
   function emitRoom(msg) {
-    socket.emit('message', msg);
+    msg.from = clientId;
+    roomBroadcastRef.push(msg);
   }
 
   function emitTo(id, msg) {
-    msg.sendto = id;
-    socket.emit('message', msg);
+    console.log('===== sending from=' + clientId + ' ,  to=' + id);
+    msg.from = clientId;
+    database.ref(databaseRoot + room + '/_direct_/' + id).push(msg);
+  }
+
+  function clearMessage() {
+    clientef.set({});
   }
 
   // -- room名を取得 --
@@ -147,7 +186,19 @@
         return room;
       }
     }
-    return '_testroom';
+
+    // generate rondom room, and replace URL
+    let room = 'room_' + getUniqueStr();
+    window.history.pushState(null, null, 'multi_firebase.html?' + room);
+    return room;
+  }
+
+  // http://qiita.com/coa00@github/items/679b0b5c7c468698d53f
+  // 疑似ユニークIDを生成
+  function getUniqueStr(myStrong){
+    var strong = 1000;
+    if (myStrong) strong = myStrong;
+    return new Date().getTime().toString(16)  + Math.floor(strong*Math.random()).toString(16);
   }
 
   // ---- for multi party -----
